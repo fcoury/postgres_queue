@@ -5,8 +5,10 @@ use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
+use std::time::Duration;
 use thiserror::Error;
 use tokio::task::JoinHandle;
+use tokio::time::sleep;
 use url::Url;
 
 pub type TaskId = i32;
@@ -122,7 +124,7 @@ impl TaskRegistry {
                             eprintln!("No handler found for task: {}", task.name);
                         }
                     } else {
-                        break;
+                        sleep(Duration::from_secs(1)).await;
                     }
                 }
             });
