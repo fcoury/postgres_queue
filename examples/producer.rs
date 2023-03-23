@@ -1,4 +1,5 @@
-use postgres_queue::initialize_database;
+use chrono::Utc;
+use postgres_queue::{connect, initialize_database};
 use serde_json::json;
 use std::env;
 
@@ -14,7 +15,7 @@ async fn main() {
 
     let database_url = "postgresql://postgres:postgres@localhost/queue";
 
-    let pool = postgres_queue::connect(database_url)
+    let pool = connect(database_url)
         .await
         .expect("Failed to connect to the database");
 
@@ -39,6 +40,8 @@ async fn main() {
                     &pool.get().await.unwrap(),
                     "send_email",
                     task_data.clone(),
+                    Utc::now(), // Run the task immediately
+                    None,       // No interval
                 )
                 .await
                 .expect("Failed to enqueue task");
