@@ -1,3 +1,5 @@
+use std::env;
+
 use postgres_queue::{initialize_database, TaskData, TaskError, TaskRegistry};
 
 async fn send_email_handler(task_id: i32, task_data: TaskData) -> Result<(), TaskError> {
@@ -20,8 +22,14 @@ async fn send_email_handler(task_id: i32, task_data: TaskData) -> Result<(), Tas
 
 #[tokio::main]
 async fn main() {
+    let args: Vec<String> = env::args().collect();
+    if args.len() != 2 {
+        eprintln!("Usage: consumer <num_workers>");
+        std::process::exit(1);
+    }
+
+    let num_workers = args[1].parse().expect("Invalid number of tasks");
     let database_url = "postgresql://postgres:postgres@localhost/queue";
-    let num_workers = 20;
 
     let pool = postgres_queue::connect(database_url)
         .await
