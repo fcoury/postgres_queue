@@ -346,3 +346,113 @@ pub async fn fail_task(
         .await?;
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use std::env;
+
+    use super::*;
+    use chrono::Duration;
+    use deadpool_postgres::Client;
+    use serde_json::json;
+    use uuid::Uuid;
+
+    async fn setup() -> Client {
+        let database_url = env::var("DATABASE_URL").expect("DATABASE_URL must be set");
+        let pool = connect(&database_url).await.unwrap();
+        let client = pool.get().await.unwrap();
+
+        let schema_name = Uuid::new_v4().to_string();
+        client
+            .execute(&format!(r#"CREATE SCHEMA "{}";"#, schema_name), &[])
+            .await
+            .unwrap();
+        client
+            .execute(&format!(r#"SET search_path TO "{}";"#, schema_name), &[])
+            .await
+            .unwrap();
+
+        initialize_database(&pool).await.unwrap();
+
+        client
+    }
+
+    #[tokio::test]
+    async fn test_connect_and_initialize_database() {
+        let _client = setup().await;
+    }
+
+    #[tokio::test]
+    async fn test_enqueue_and_dequeue() {
+        let mut client = setup().await;
+        let task_data = json!({ "key": "value" });
+        let run_at = Utc::now() + Duration::seconds(0);
+        let task_id = enqueue(&client, "test_task", task_data.clone(), run_at, None)
+            .await
+            .unwrap();
+
+        let task_opt = dequeue(&mut client).await.unwrap();
+        assert!(task_opt.is_some());
+        let task = task_opt.unwrap();
+        assert_eq!(task.id, task_id);
+        assert_eq!(task.name, "test_task");
+        assert_eq!(task.data, task_data);
+    }
+
+    #[tokio::test]
+    async fn test_complete_task() {
+        let mut client = setup().await;
+        let task_data = json!({ "key": "value" });
+        let run_at = Utc::now() + Duration::seconds(0);
+        let task_id = enqueue(&client, "test_task", task_data, run_at, None)
+            .await
+            .unwrap();
+
+        let task_opt = dequeue(&mut client).await.unwrap();
+        assert!(task_opt.is_some());
+        let task = task_opt.unwrap();
+        assert_eq!(task.id, task_id);
+
+        complete_task(&client, task_id, None).await.unwrap();
+
+        let row = client
+            .query_one("SELECT status FROM task_queue WHERE id = $1", &[&task_id])
+            .await
+            .unwrap();
+
+        let status: String = row.get(0);
+        assert_eq!(status, "completed");
+    }
+
+    #[tokio::test]
+    async fn test_fail_task() {
+        let mut client = setup().await;
+        let task_data = json!({ "key": "value" });
+        let run_at = Utc::now() + Duration::seconds(0);
+        let task_id = enqueue(&client, "test_task", task_data, run_at, None)
+            .await
+            .unwrap();
+
+        let task_opt = dequeue(&mut client).await.unwrap();
+        assert!(task_opt.is_some());
+        let task = task_opt.unwrap();
+        assert_eq!(task.id, task_id);
+
+        let error_message = "test error";
+        fail_task(&client, task_id, error_message).await.unwrap();
+
+        let row = client
+            .query_one(
+                "SELECT status, task_data FROM task_queue WHERE id = $1",
+                &[&task_id],
+            )
+            .await
+            .unwrap();
+
+        let status: String = row.get(0);
+        let task_data: TaskData = row.get(1);
+
+        assert_eq!(status, "failed");
+        assert_eq!(task_data["error"], json!(error_message));
+    }
+}
