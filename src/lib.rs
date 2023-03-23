@@ -1,3 +1,37 @@
+//! A library for managing and executing tasks in a PostgreSQL-backed queue.
+//!
+//! This library provides a simple way to define, enqueue, and process tasks in a concurrent
+//! and fault-tolerant manner using a PostgreSQL database as the task queue.
+//!
+//! # Example
+//!
+//! ```rust
+//! use my_task_queue::{TaskRegistry, TaskData, TaskError, connect, initialize_database};
+//! use chrono::{Utc, Duration};
+//!
+//! #[tokio::main]
+//! async fn main() -> Result<(), Box<dyn std::error::Error>> {
+//!     let database_url = "postgres://user:password@localhost/dbname";
+//!     let pool = connect(database_url).await?;
+//!     initialize_database(&pool).await?;
+//!
+//!     let mut task_registry = TaskRegistry::new();
+//!     task_registry.register_task("my_task", my_task_handler);
+//!
+//!     let task_data = serde_json::json!({ "message": "Hello, world!" });
+//!     let run_at = Utc::now() + Duration::seconds(10);
+//!     let task_id = my_task_queue::enqueue(&pool, "my_task", task_data.clone(), run_at, None).await?;
+//!
+//!     task_registry.run(&pool, 4).await?;
+//!
+//!     Ok(())
+//! }
+//!
+//! async fn my_task_handler(task_id: i32, task_data: TaskData) -> Result<(), TaskError> {
+//!     println!("Task {}: {:?}", task_id, task_data);
+//!     Ok(())
+//! }
+//! ```
 use chrono::{DateTime, Utc};
 use deadpool_postgres::{Client, Config, Pool, PoolError, Runtime};
 use serde::{Deserialize, Serialize};
@@ -12,9 +46,16 @@ use tokio::task::JoinHandle;
 use tokio::time::sleep;
 use url::Url;
 
+/// A type alias for Task ID.
 pub type TaskId = i32;
+
+/// A type alias for Task Data.
 pub type TaskData = JsonValue;
+
+/// A type alias for Task Status.
 pub type TaskStatus = String;
+
+/// A type alias for Task Handler.
 pub type TaskHandler = Box<
     dyn Fn(
             TaskId,
@@ -25,6 +66,7 @@ pub type TaskHandler = Box<
         + Sync,
 >;
 
+/// An enumeration of possible errors that can occur while working with tasks.
 #[derive(Error, Debug)]
 pub enum TaskError {
     #[error("Serialization error: {0}")]
@@ -43,6 +85,7 @@ pub enum TaskError {
     UrlError(#[from] url::ParseError),
 }
 
+/// An enumeration of possible errors that can occur while connecting to the database.
 #[derive(Error, Debug)]
 pub enum ConnectionError {
     #[error("URL parsing error: {0}")]
@@ -52,6 +95,7 @@ pub enum ConnectionError {
     CreatePoolError(#[from] deadpool_postgres::CreatePoolError),
 }
 
+/// A struct representing a task in the task queue.
 #[derive(Debug, Deserialize, Serialize)]
 pub struct Task {
     pub id: TaskId,
@@ -62,17 +106,20 @@ pub struct Task {
     pub interval: Option<Duration>,
 }
 
+/// A struct for managing a registry of task handlers.
 pub struct TaskRegistry {
     handlers: Arc<HashMap<String, TaskHandler>>,
 }
 
 impl TaskRegistry {
+    /// Creates a new TaskRegistry.
     pub fn new() -> Self {
         Self {
             handlers: Arc::new(HashMap::new()),
         }
     }
 
+    /// Registers a task handler with the provided name.
     pub fn register_task<F, Fut>(&mut self, name: String, handler: F)
     where
         F: Fn(i32, TaskData) -> Fut + Send + Sync + 'static,
@@ -88,10 +135,12 @@ impl TaskRegistry {
             .insert(name, Box::new(wrapped_handler));
     }
 
+    /// Returns a reference to the task handlers.
     pub fn handlers(&self) -> &Arc<HashMap<String, TaskHandler>> {
         &self.handlers
     }
 
+    /// Runs the task handlers with the provided number of workers.
     pub async fn run(
         &self,
         pool: &Pool,
@@ -145,6 +194,7 @@ impl Default for TaskRegistry {
     }
 }
 
+/// Creates a Deadpool configuration from a database URL.
 fn create_deadpool_config_from_url(url: &str) -> Result<Config, url::ParseError> {
     let parsed_url = Url::parse(url)?;
 
@@ -170,12 +220,14 @@ fn create_deadpool_config_from_url(url: &str) -> Result<Config, url::ParseError>
     Ok(config)
 }
 
+/// Connects to the PostgreSQL database using the provided URL.
 pub async fn connect(database_url: &str) -> Result<Pool, ConnectionError> {
     let config = create_deadpool_config_from_url(database_url)?;
     let pool = config.create_pool(Some(Runtime::Tokio1), tokio_postgres::NoTls)?;
     Ok(pool)
 }
 
+/// Initializes the task queue database schema.
 pub async fn initialize_database(pool: &Pool) -> Result<(), TaskError> {
     let client = pool.get().await?;
     client
@@ -197,6 +249,7 @@ pub async fn initialize_database(pool: &Pool) -> Result<(), TaskError> {
     Ok(())
 }
 
+/// Enqueues a task with the specified parameters.
 pub async fn enqueue(
     client: &Client,
     name: &str,
@@ -215,6 +268,7 @@ pub async fn enqueue(
     Ok(row.get(0))
 }
 
+/// Dequeues a task from the task queue.
 pub async fn dequeue(client: &mut Client) -> Result<Option<Task>, TaskError> {
     let tx = client.transaction().await?;
     let row = tx
@@ -251,6 +305,7 @@ pub async fn dequeue(client: &mut Client) -> Result<Option<Task>, TaskError> {
     }
 }
 
+/// Marks a task as complete and reschedules it if it has an interval.
 pub async fn complete_task(
     client: &Client,
     task_id: TaskId,
@@ -276,6 +331,7 @@ pub async fn complete_task(
     Ok(())
 }
 
+/// Marks a task as failed and stores the error message in the task data.
 pub async fn fail_task(
     client: &Client,
     task_id: TaskId,
